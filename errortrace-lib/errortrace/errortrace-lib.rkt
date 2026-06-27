@@ -188,14 +188,21 @@
 
 (define execute-counts-enabled (make-parameter #f))
 
+;; Each entry in execute-info is (cons mark count-box), where count-box
+;; is a box holding a fixnum. We use box-cas! for atomic increment so
+;; that counts are reliable under concurrent and parallel threads.
 (define (register-executed-once key)
-  (let ([i (hash-ref execute-info key)])
-    (set-mcdr! i (add1 (mcdr i)))))
+  (let* ([i (hash-ref execute-info key)]
+         [b (cdr i)])
+    (let loop ()
+      (let ([old (unbox b)])
+        (unless (box-cas! b old (add1 old))
+          (loop))))))
 
 (define (execute-point mark expr)
   (if (execute-counts-enabled)
       (let ([key (gensym)])
-        (hash-set! execute-info key (mcons mark 0))
+        (hash-set! execute-info key (cons mark (box 0)))
         (with-syntax ([key (datum->syntax #f key (quote-syntax here))]
                       [expr expr]
                       [register-executed-once register-executed-once]);<- 3D!
@@ -205,7 +212,7 @@
 
 (define (get-execute-counts)
   (hash-map execute-info
-            (lambda (k v) (cons (mcar v) (mcdr v)))))
+            (lambda (k v) (cons (car v) (unbox (cdr v))))))
 
 (define (annotate-executed-file filename-path [display-string "^.,"])
   (annotate-file filename-path (get-execute-counts) display-string))
@@ -433,6 +440,7 @@
          
          execute-counts-enabled
          get-execute-counts
+         execute-info
          
          ;; need to rename here to avoid having to rename when the unit is invoked.
          (rename-out [test-coverage-enabled coverage-counts-enabled])
